@@ -14,8 +14,10 @@ from typing import Optional
 from typing import Set
 from typing import Text
 from typing import Tuple
+from typing import Hashable
 
-from rasa_nlu.config import RasaNLUConfig
+from rasa_nlu import config
+from rasa_nlu.config import RasaNLUModelConfig
 from rasa_nlu.training_data import Message
 
 if typing.TYPE_CHECKING:
@@ -102,30 +104,51 @@ class MissingArgumentError(ValueError):
         return self.message
 
 
+class UnsupportedLanguageError(Exception):
+    """Raised when a component is created but the language is not supported.
+
+    Attributes:
+        component -- component name
+        language -- language that component doesn't support
+    """
+
+    def __init__(self, component, language):
+        # type: (Text, Text) -> None
+        self.component = component
+        self.language = language
+
+        super(UnsupportedLanguageError, self).__init__(component, language)
+
+    def __str__(self):
+        return "component {} does not support language {}".format(
+            self.component, self.language
+        )
+
+
 class Component(object):
     """A component is a message processing unit in a pipeline.
 
     Components are collected sequentially in a pipeline. Each component
     is called one after another. This holds for
-     initialization, training, persisting and loading the components.
-     If a component comes first in a pipeline, its
-     methods will be called first.
+    initialization, training, persisting and loading the components.
+    If a component comes first in a pipeline, its
+    methods will be called first.
 
-    E.g. to process an incoming message, the `process` method of
+    E.g. to process an incoming message, the ``process`` method of
     each component will be called. During the processing
-     (as well as the training, persisting and initialization)
-     components can pass information to other components.
-     The information is passed to other components by providing
-     attributes to the so called pipeline context. The
-     pipeline context contains all the information of the previous
-     components a component can use to do its own
-     processing. For example, a featurizer component can provide
-     features that are used by another component down
-     the pipeline to do intent classification."""
+    (as well as the training, persisting and initialization)
+    components can pass information to other components.
+    The information is passed to other components by providing
+    attributes to the so called pipeline context. The
+    pipeline context contains all the information of the previous
+    components a component can use to do its own
+    processing. For example, a featurizer component can provide
+    features that are used by another component down
+    the pipeline to do intent classification."""
 
     # Name of the component to be used when integrating it in a
-    # pipeline. E.g. `[ComponentA, ComponentB]`
-    # will be a proper pipeline definition where `ComponentA`
+    # pipeline. E.g. ``[ComponentA, ComponentB]``
+    # will be a proper pipeline definition where ``ComponentA``
     # is the name of the first component of the pipeline.
     name = ""
 
@@ -142,24 +165,37 @@ class Component(object):
     # within the above described `provides` property.
     requires = []
 
-    def __init__(self):
+    # Defines the default configuration parameters of a component
+    # these values can be overwritten in the pipeline configuration
+    # of the model. The component should choose sensible defaults
+    # and should be able to create reasonable results with the defaults.
+    defaults = {}
+
+    # Defines what language(s) this component can handle.
+    # This attribute is designed for instance method: `can_handle_language`.
+    # Default value is None which means it can handle all languages.
+    # This is an important feature for backwards compatibility of components.
+    language_list = None
+
+    def __init__(self, component_config=None):
+        if not component_config:
+            component_config = {}
+
+        # makes sure the name of the configuration is part of the config
+        # this is important for e.g. persistence
+        component_config["name"] = self.name
+
+        self.component_config = config.override_defaults(
+                self.defaults, component_config)
+
         self.partial_processing_pipeline = None
         self.partial_processing_context = None
-
-    def __getstate__(self):
-        d = self.__dict__.copy()
-        # these properties should not be pickled
-        if "partial_processing_context" in d:
-            del d["partial_processing_context"]
-        if "partial_processing_pipeline" in d:
-            del d["partial_processing_pipeline"]
-        return d
 
     @classmethod
     def required_packages(cls):
         # type: () -> List[Text]
         """Specify which python packages need to be installed to use this
-        component, e.g. `["spacy", "numpy"]`.
+        component, e.g. ``["spacy"]``.
 
         This list of requirements allows us to fail early during training
         if a required package is not installed."""
@@ -175,21 +211,33 @@ class Component(object):
         # type: (...) -> Component
         """Load this component from file.
 
-        After a component got trained, it will be persisted by
+        After a component has been trained, it will be persisted by
         calling `persist`. When the pipeline gets loaded again,
         this component needs to be able to restore itself.
         Components can rely on any context attributes that are
-        created by `pipeline_init` calls to components previous
+        created by :meth:`components.Component.pipeline_init`
+        calls to components previous
         to this one."""
-        return cached_component if cached_component else cls()
+        if cached_component:
+            return cached_component
+        else:
+            component_config = model_metadata.for_component(cls.name)
+            return cls(component_config)
 
     @classmethod
-    def create(cls, config):
-        # type: (RasaNLUConfig) -> Component
+    def create(cls, cfg):
+        # type: (RasaNLUModelConfig) -> Component
         """Creates this component (e.g. before a training is started).
 
         Method can access all configuration parameters."""
-        return cls()
+
+        # Check language supporting
+        language = cfg.language
+        if not cls.can_handle_language(language):
+            # check failed
+            raise UnsupportedLanguageError(cls.name, language)
+
+        return cls(cfg.for_component(cls.name, cls.defaults))
 
     def provide_context(self):
         # type: () -> Optional[Dict[Text, Any]]
@@ -206,15 +254,17 @@ class Component(object):
         (e.g. loading word vectors for the pipeline)."""
         pass
 
-    def train(self, training_data, config, **kwargs):
-        # type: (TrainingData, RasaNLUConfig, **Any) -> None
+    def train(self, training_data, cfg, **kwargs):
+        # type: (TrainingData, RasaNLUModelConfig, **Any) -> None
         """Train this component.
 
         This is the components chance to train itself provided
         with the training data. The component can rely on
         any context attribute to be present, that gets created
-        by a call to `pipeline_init` of ANY component and
-        on any context attributes created by a call to `train`
+        by a call to :meth:`components.Component.pipeline_init`
+        of ANY component and
+        on any context attributes created by a call to
+        :meth:`components.Component.train`
         of components previous to this one."""
         pass
 
@@ -225,14 +275,17 @@ class Component(object):
         This is the components chance to process an incoming
         message. The component can rely on
         any context attribute to be present, that gets created
-        by a call to `pipeline_init` of ANY component and
-        on any context attributes created by a call to `process`
+        by a call to :meth:`components.Component.pipeline_init`
+        of ANY component and
+        on any context attributes created by a call to
+        :meth:`components.Component.process`
         of components previous to this one."""
         pass
 
     def persist(self, model_dir):
         # type: (Text) -> Optional[Dict[Text, Any]]
         """Persist this component to disk for future loading."""
+
         pass
 
     @classmethod
@@ -244,9 +297,17 @@ class Component(object):
         Otherwise, an instantiation of the
         component will be reused for all models where the
         metadata creates the same key."""
-        from rasa_nlu.model import Metadata
 
         return None
+
+    def __getstate__(self):
+        d = self.__dict__.copy()
+        # these properties should not be pickled
+        if "partial_processing_context" in d:
+            del d["partial_processing_context"]
+        if "partial_processing_pipeline" in d:
+            del d["partial_processing_pipeline"]
+        return d
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
@@ -276,6 +337,20 @@ class Component(object):
             logger.info("Failed to run partial processing due "
                         "to missing pipeline.")
         return message
+
+    @classmethod
+    def can_handle_language(cls, language):
+        # type: (Hashable) -> bool
+        """Check if component supports a specific language.
+
+        This method can be overwritten when needed. (e.g. dynamically
+        determine which language is supported.)"""
+
+        # if language_list is set to `None` it means: support all languages
+        if language is None or cls.language_list is None:
+            return True
+
+        return language in cls.language_list
 
 
 class ComponentBuilder(object):
@@ -321,8 +396,18 @@ class ComponentBuilder(object):
                        model_metadata,
                        **context):
         # type: (Text, Text, Metadata, **Any) -> Component
-        """Tries to retrieve a component from the cache, calls
-        `load` to create a new component."""
+        """Tries to retrieve a component from the cache, else calls
+        ``load`` to create a new component.
+
+        Args:
+            component_name (str): the name of the component to load
+            model_dir (str): the directory to read the model from
+            model_metadata (Metadata): the model's
+            :class:`rasa_nlu.models.Metadata`
+
+        Returns:
+            Component: the loaded component.
+        """
         from rasa_nlu import registry
         from rasa_nlu.model import Metadata
 
@@ -341,8 +426,8 @@ class ComponentBuilder(object):
             raise Exception("Failed to load component '{}'. "
                             "{}".format(component_name, e))
 
-    def create_component(self, component_name, config):
-        # type: (Text, RasaNLUConfig) -> Component
+    def create_component(self, component_name, cfg):
+        # type: (Text, RasaNLUModelConfig) -> Component
         """Tries to retrieve a component from the cache,
         calls `create` to create a new component."""
         from rasa_nlu import registry
@@ -350,10 +435,10 @@ class ComponentBuilder(object):
 
         try:
             component, cache_key = self.__get_cached_component(
-                    component_name, Metadata(config.as_dict(), None))
+                    component_name, Metadata(cfg.as_dict(), None))
             if component is None:
                 component = registry.create_component_by_name(component_name,
-                                                              config)
+                                                              cfg)
                 self.__add_to_cache(component, cache_key)
             return component
         except MissingArgumentError as e:  # pragma: no cover

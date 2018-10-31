@@ -4,16 +4,47 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import errno
+import glob
 import io
 import json
+import logging
 import os
-
-import simplejson
-import six
-from builtins import str
-from typing import List
+import re
+import tempfile
+from collections import namedtuple
+from typing import List, Any
 from typing import Optional
 from typing import Text
+
+import requests
+import simplejson
+import six
+import yaml
+from builtins import str
+from future.utils import PY3
+from requests.auth import HTTPBasicAuth
+
+
+def add_logging_option_arguments(parser, default=logging.WARNING):
+    """Add options to an argument parser to configure logging levels."""
+
+    # arguments for logging configuration
+    parser.add_argument(
+            '--debug',
+            help="Print lots of debugging statements. "
+                 "Sets logging level to DEBUG",
+            action="store_const",
+            dest="loglevel",
+            const=logging.DEBUG,
+            default=default,
+    )
+    parser.add_argument(
+            '-v', '--verbose',
+            help="Be verbose. Sets logging level to INFO",
+            action="store_const",
+            dest="loglevel",
+            const=logging.INFO,
+    )
 
 
 def relative_normpath(f, path):
@@ -52,28 +83,48 @@ def create_dir_for_file(file_path):
             raise
 
 
-def recursively_find_files(resource_name):
+def list_directory(path):
     # type: (Text) -> List[Text]
-    """Traverse directory hierarchy to find files.
+    """Returns all files and folders excluding hidden files.
 
-    `resource_name` can be a folder or a file. In both cases
-    we will return a list of files."""
+    If the path points to a file, returns the file. This is a recursive
+    implementation returning files in any depth of the path."""
 
-    if not isinstance(resource_name, six.string_types):
+    if not isinstance(path, six.string_types):
         raise ValueError("Resourcename must be a string type")
 
-    found = []
-    if os.path.isfile(resource_name):
-        found.append(resource_name)
-    elif os.path.isdir(resource_name):
-        for root, directories, files in os.walk(resource_name):
-            for f in files:
-                found.append(os.path.join(root, f))
+    if os.path.isfile(path):
+        return [path]
+    elif os.path.isdir(path):
+        results = []
+        for base, dirs, files in os.walk(path):
+            # remove hidden files
+            goodfiles = filter(lambda x: not x.startswith('.'), files)
+            results.extend(os.path.join(base, f) for f in goodfiles)
+        return results
     else:
         raise ValueError("Could not locate the resource '{}'."
-                         "".format(os.path.abspath(resource_name)))
+                         "".format(os.path.abspath(path)))
 
-    return found
+
+def list_files(path):
+    # type: (Text) -> List[Text]
+    """Returns all files excluding hidden files.
+
+    If the path points to a file, returns the file."""
+
+    return [fn for fn in list_directory(path) if os.path.isfile(fn)]
+
+
+def list_subdirectories(path):
+    # type: (Text) -> List[Text]
+    """Returns all folders excluding hidden files.
+
+    If the path points to a file, returns an empty list."""
+
+    return [fn
+            for fn in glob.glob(os.path.join(path, '*'))
+            if os.path.isdir(fn)]
 
 
 def lazyproperty(fn):
@@ -165,6 +216,29 @@ def read_json_file(filename):
                          "{}".format(os.path.abspath(filename), e))
 
 
+def fix_yaml_loader():
+    """Ensure that any string read by yaml is represented as unicode."""
+    from yaml import Loader, SafeLoader
+
+    def construct_yaml_str(self, node):
+        # Override the default string handling function
+        # to always return unicode objects
+        return self.construct_scalar(node)
+
+    Loader.add_constructor(u'tag:yaml.org,2002:str', construct_yaml_str)
+    SafeLoader.add_constructor(u'tag:yaml.org,2002:str', construct_yaml_str)
+
+
+def read_yaml(content):
+    fix_yaml_loader()
+    return yaml.load(content)
+
+
+def read_yaml_file(filename):
+    fix_yaml_loader()
+    return yaml.load(read_file(filename, "utf-8"))
+
+
 def build_entity(start, end, value, entity_type, **kwargs):
     """Builds a standard entity dictionary.
 
@@ -192,8 +266,18 @@ def is_model_dir(model_dir):
         return False
     model_dir, child_dirs, files = dir_tree[0]
     file_extenstions = [os.path.splitext(f)[1] for f in files]
-    only_valid_files = all([ext in allowed_extensions for ext in file_extenstions])
+    only_valid_files = all([ext in allowed_extensions
+                            for ext in file_extenstions])
     return only_valid_files
+
+
+def is_url(resource_name):
+    """Return True if string is an http, ftp, or file URL path.
+
+    This implementation is the same as the one used by matplotlib"""
+
+    URL_REGEX = re.compile(r'http://|https://|ftp://|file://|file:\\')
+    return URL_REGEX.match(resource_name) is not None
 
 
 def remove_model(model_dir):
@@ -203,4 +287,210 @@ def remove_model(model_dir):
         shutil.rmtree(model_dir)
         return True
     else:
-        raise ValueError("Cannot remove {}, it seems it is not a model directory".format(model_dir))
+        raise ValueError("Cannot remove {}, it seems it is not a model "
+                         "directory".format(model_dir))
+
+
+def as_text_type(t):
+    if isinstance(t, six.text_type):
+        return t
+    else:
+        return six.text_type(t)
+
+
+def configure_colored_logging(loglevel):
+    import coloredlogs
+    field_styles = coloredlogs.DEFAULT_FIELD_STYLES.copy()
+    field_styles['asctime'] = {}
+    level_styles = coloredlogs.DEFAULT_LEVEL_STYLES.copy()
+    level_styles['debug'] = {}
+    coloredlogs.install(
+            level=loglevel,
+            use_chroot=False,
+            fmt='%(asctime)s %(levelname)-8s %(name)s  - %(message)s',
+            level_styles=level_styles,
+            field_styles=field_styles)
+
+
+def pycloud_unpickle(file_name):
+    # type: (Text) -> Any
+    """Unpickle an object from file using cloudpickle."""
+    from future.utils import PY2
+    import cloudpickle
+
+    with io.open(file_name, 'rb') as f:  # pragma: no test
+        if PY2:
+            return cloudpickle.load(f)
+        else:
+            return cloudpickle.load(f, encoding="latin-1")
+
+
+def pycloud_pickle(file_name, obj):
+    # type: (Text, Any) -> None
+    """Pickle an object to a file using cloudpickle."""
+    import cloudpickle
+
+    with io.open(file_name, 'wb') as f:
+        cloudpickle.dump(obj, f)
+
+
+def create_temporary_file(data, suffix="", mode="w+"):
+    """Creates a tempfile.NamedTemporaryFile object for data.
+
+    mode defines NamedTemporaryFile's  mode parameter in py3."""
+
+    if PY3:
+        f = tempfile.NamedTemporaryFile(mode=mode, suffix=suffix,
+                                        delete=False)
+        f.write(data)
+    else:
+        f = tempfile.NamedTemporaryFile("w+", suffix=suffix,
+                                        delete=False)
+        f.write(data.encode("utf-8"))
+
+    f.close()
+    return f.name
+
+
+def zip_folder(folder):
+    """Create an archive from a folder."""
+    import tempfile
+    import shutil
+
+    zipped_path = tempfile.NamedTemporaryFile(delete=False)
+    zipped_path.close()
+
+    # WARN: not thread save!
+    return shutil.make_archive(zipped_path.name, str("zip"), folder)
+
+
+def concat_url(base, subpath):
+    # type: (Text, Optional[Text]) -> Text
+    """Append a subpath to a base url.
+
+    Strips leading slashes from the subpath if necessary. This behaves
+    differently than `urlparse.urljoin` and will not treat the subpath
+    as a base url if it starts with `/` but will always append it to the
+    `base`."""
+
+    if subpath:
+        url = base
+        if not base.endswith("/"):
+            url += "/"
+        if subpath.startswith("/"):
+            subpath = subpath[1:]
+        return url + subpath
+    else:
+        return base
+
+
+def read_endpoint_config(filename, endpoint_type):
+    # type: (Text, Text) -> Optional[EndpointConfig]
+    """Read an endpoint configuration file from disk and extract one
+
+    config. """
+    if not filename:
+        return None
+
+    content = read_yaml_file(filename)
+    if endpoint_type in content:
+        return EndpointConfig.from_dict(content[endpoint_type])
+    else:
+        return None
+
+
+def read_endpoints(endpoint_file):
+    model = read_endpoint_config(endpoint_file,
+                                 endpoint_type="model")
+    data = read_endpoint_config(endpoint_file,
+                                endpoint_type="data")
+
+    return AvailableEndpoints(model, data)
+
+
+# The EndpointConfig class is currently used to define external endpoints
+# for pulling NLU models from a server and training data
+AvailableEndpoints = namedtuple('AvailableEndpoints', 'model data')
+
+
+class EndpointConfig(object):
+    """Configuration for an external HTTP endpoint."""
+
+    def __init__(self, url, params=None, headers=None, basic_auth=None,
+                 token=None, token_name="token"):
+        self.url = url
+        self.params = params if params else {}
+        self.headers = headers if headers else {}
+        self.basic_auth = basic_auth
+        self.token = token
+        self.token_name = token_name
+
+    def request(self,
+                method="post",  # type: Text
+                subpath=None,  # type: Optional[Text]
+                content_type="application/json",  # type: Optional[Text]
+                **kwargs  # type: Any
+                ):
+        """Send a HTTP request to the endpoint.
+
+        All additional arguments will get passed through
+        to `requests.request`."""
+
+        # create the appropriate headers
+        headers = self.headers.copy()
+        if content_type:
+            headers["Content-Type"] = content_type
+        if "headers" in kwargs:
+            headers.update(kwargs["headers"])
+            del kwargs["headers"]
+
+        # create authentication parameters
+        if self.basic_auth:
+            auth = HTTPBasicAuth(self.basic_auth["username"],
+                                 self.basic_auth["password"])
+        else:
+            auth = None
+
+        url = concat_url(self.url, subpath)
+
+        # construct GET parameters
+        params = self.params.copy()
+
+        # set the authentication token if present
+        if self.token:
+            params[self.token_name] = self.token
+
+        if "params" in kwargs:
+            params.update(kwargs["params"])
+            del kwargs["params"]
+
+        return requests.request(method,
+                                url,
+                                headers=headers,
+                                params=params,
+                                auth=auth,
+                                **kwargs)
+
+    @classmethod
+    def from_dict(cls, data):
+        return EndpointConfig(
+                data.get("url"),
+                data.get("params"),
+                data.get("headers"),
+                data.get("basic_auth"),
+                data.get("token"),
+                data.get("token_name"))
+
+    def __eq__(self, other):
+        if isinstance(self, type(other)):
+            return (other.url == self.url and
+                    other.params == self.params and
+                    other.headers == self.headers and
+                    other.basic_auth == self.basic_auth and
+                    other.token == self.token and
+                    other.token_name == self.token_name)
+        else:
+            return False
+
+    def __ne__(self, other):
+        return not self.__eq__(other)

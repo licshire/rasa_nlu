@@ -4,10 +4,227 @@ Change Log
 All notable changes to this project will be documented in this file.
 This project adheres to `Semantic Versioning`_ starting with version 0.7.0.
 
-[Unreleased 0.12.0.aX] - `master`_
+[Unreleased 0.14.0.aX] - `master`_
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. note:: This version is not yet released and is under active development.
+
+Added
+-----
+
+Changed
+-------
+- ``EmbeddingIntentClassifier`` has been refactored, including changes to the
+  config parameters as well as comments and types for all class functions.
+- the http server's ``POST /evaluate`` endpoint returns evaluation results
+  for both entities and intents
+
+Removed
+-------
+- ``/config`` endpoint
+
+Fixed
+-----
+
+
+[0.13.7] - 2018-10-11
+^^^^^^^^^^^^^^^^^^^^^
+
+Fixed
+-----
+- ``rasa_nlu.server`` allowed more than ``max_training_processes``
+  to be trained if they belong to different projects.
+  ``max_training_processes`` is now a global parameter, regardless of what
+  project the training process belongs to.
+
+
+[0.13.6] - 2018-10-04
+^^^^^^^^^^^^^^^^^^^^^
+
+Changed
+-------
+- ``boto3`` is now loaded lazily in ``AWSPersistor`` and is not
+  included in ``requirements_bare.txt`` anymore
+
+Fixed
+-----
+- Allow training of pipelines containing ``EmbeddingIntentClassifier`` in
+  a separate thread on python 3. This makes http server calls to ``/train``
+  non-blocking
+- require ``scikit-learn<0.20`` in setup py to avoid corrupted installations
+  with the most recent scikit learn
+
+
+[0.13.5] - 2018-09-28
+^^^^^^^^^^^^^^^^^^^^^
+
+Changed
+-------
+- Training data is now validated after loading from files in ``loading.py`` instead of on initialisation of
+  ``TrainingData`` object
+
+Fixed
+-----
+- ``Project`` set up to pull models from a remote server only use
+  the pulled model instead of searching for models locally
+
+[0.13.4] - 2018-09-19
+^^^^^^^^^^^^^^^^^^^^^
+
+Fixed
+-----
+- pinned matplotlib to 2.x (not ready for 3.0 yet)
+- pytest-services since it wasn't used and caused issues on Windows
+
+[0.13.3] - 2018-08-28
+^^^^^^^^^^^^^^^^^^^^^
+
+Added
+-----
+- ``EndpointConfig`` class that handles authenticated requests (ported from Rasa Core)
+- ``DataRouter()`` class supports a ``model_server`` ``EndpointConfig``, which it regularly queries to fetch NLU models
+- this can be used with ``rasa_nlu.server`` with the ``--endpoint`` option (the key for this the model server config is ``model``)
+- docs on model fetching from a URL
+- ability to specify lookup tables in training data
+
+Changed
+-------
+- loading training data from a URL requires an instance of ``EndpointConfig``
+
+- Changed evaluate behaviour to plot two histogram bars per bin.
+  Plotting confidence of right predictions in a wine-ish colour
+  and wrong ones in a blue-ish colour.
+
+Removed
+-------
+
+Fixed
+-----
+- re-added support for entity names with special characters in markdown format
+
+[0.13.2] - 2018-08-28
+^^^^^^^^^^^^^^^^^^^^^
+
+Changed
+-------
+- added information about migrating the CRF component from 0.12 to 0.13
+
+Fixed
+-----
+- pipelines containing the ``EmbeddingIntentClassifier`` are not trained in a
+separate thread, as this may lead to freezing during training
+
+[0.13.1] - 2018-08-07
+^^^^^^^^^^^^^^^^^^^^^
+
+Added
+-----
+- documentation example for creating a custom component
+
+Fixed
+-----
+- correctly pass reference time in miliseconds to duckling_http
+
+[0.13.0] - 2018-08-02
+^^^^^^^^^^^^^^^^^^^^^
+
+.. warning::
+
+  This is a release **breaking backwards compatibility**.
+  Unfortunately, it is not possible to load previously trained models as
+  the parameters for the tensorflow and CRF models changed.
+
+Added
+-----
+- support for `tokenizer_jieba` load custom dictionary from config
+- allow pure json including pipeline configuration on train endpoint
+- doc link to a community contribution for Rasa NLU in Chinese
+- support for component ``count_vectors_featurizer`` use ``tokens``
+  feature provide by tokenizer
+- 2-character and a 5-character prefix features to ``ner_crf``
+- ``ner_crf`` with whitespaced tokens to ``tensorflow_embedding`` pipeline
+- predict empty string instead of None for intent name
+- update default parameters for tensorflow embedding classifier
+- do not predict anything if feature vector contains only zeros
+  in tensorflow embedding classifier
+- change persistence keywords in tensorflow embedding classifier
+  (make previously trained models impossible to load)
+- intent_featurizer_count_vectors adds features to text_features
+  instead of overwriting them
+- add basic OOV support to intent_featurizer_count_vectors (make
+  previously trained models impossible to load)
+- add a feature for each regex in the training set for crf_entity_extractor
+- Current training processes count for server and projects.
+- the ``/version`` endpoint returns a new field ``minimum_compatible_version``
+- added logging of intent prediction errors to evaluation script
+- added histogram of confidence scores to evaluation script
+- documentation for the ``ner_duckling_http`` component
+
+Changed
+-------
+- renamed CRF features ``wordX`` to ``suffixX`` and ``preX`` to ``suffixX``
+- L1 and L2 regularisation defaults in ``ner_crf`` both set to 0.1
+- ``whitespace_tokenizer`` ignores punctuation ``.,!?`` before
+  whitespace or end of string
+- Allow multiple training processes per project
+- Changed AlreadyTrainingError to MaxTrainingError. The first one was used
+  to indicate that the project was already training. The latest will show
+  an error when the server isn't able to training more models.
+- ``Interpreter.ensure_model_compatibility`` takes a new parameters for
+  the version to compare the model version against
+- confusion matrix plot gets saved to file automatically during evaluation
+
+Removed
+-------
+- dependence on spaCy when training ``ner_crf`` without POS features
+- documentation for the ``ner_duckling`` component - facebook doesn't maintain
+  the underlying clojure version of duckling anymore. component will be
+  removed in the next release.
+
+Fixed
+-----
+- Fixed Luis emulation output to add start, end position and
+  confidence for each entity.
+- Fixed byte encoding issue where training data could not be
+  loaded by URL in python 3.
+
+[0.12.3] - 2018-05-02
+^^^^^^^^^^^^^^^^^^^^^
+
+Added
+-----
+- Returning used model name and project name in the response
+  of ``GET /parse`` and ``POST /parse`` as ``model`` and ``project``
+  respectively.
+
+Fixed
+-----
+- readded possibility to set fixed model name from http train endpoint
+
+
+[0.12.2] - 2018-04-20
+^^^^^^^^^^^^^^^^^^^^^
+
+Fixed
+-----
+- fixed duckling text extraction for ner_duckling_http
+
+
+[0.12.1] - 2018-04-18
+^^^^^^^^^^^^^^^^^^^^^
+Added
+-----
+- support for retrieving training data from a URL
+
+Fixed
+-----
+- properly set duckling http url through environment setting
+- improvements and fixes to the configuration and pipeline
+  documentation
+
+
+[0.12.0] - 2018-04-17
+^^^^^^^^^^^^^^^^^^^^^
 
 Added
 -----
@@ -17,19 +234,66 @@ Added
 - support for markdown files containing regex-features or synonyms only
 - added ability to list projects in cloud storage services for model loading
 - server evaluation endpoint at ``POST /evaluate``
-
+- server endpoint at ``DELETE /models`` to unload models from server memory
+- CRF entity recognizer now returns a confidence score when extracting entities
+- added count vector featurizer to create bag of words representation
+- added embedding intent classifier implemented in tensorflow
+- added tensorflow requirements
+- added docs blurb on handling contextual dialogue
+- distribute package as wheel file in addition to source
+  distribution (faster install)
+- allow a component to specify which languages it supports
+- support for persisting models to Azure Storage
+- added tokenizer for CHINESE (``zh``) as well as instructions on how to load
+  MITIE model
 
 Changed
 -------
+- model configuration is separated from server / train configuration. This is a
+  **breaking change** and models need to be retrained. See migrations guide.
 - Regex features are now sorted internally.
   **retrain your model if you use regex features**
 - The keyword intent classifier now returns ``null`` instead
   of ``"None"`` as intent name in the json result if there's no match
 - in teh evaluation results, replaced ``O`` with the string
   ``no_entity`` for better understanding
+- The ``CRFEntityExtractor`` now only trains entity examples that have
+  ``"extractor": "ner_crf"`` or no extractor at all
+- Ignore hidden files when listing projects or models
+- Docker Images now run on python 3.6 for better non-latin character set support
+- changed key name for a file in ngram featurizer
+- changed ``jsonObserver`` to generate logs without a record seperator
+- Improve jsonschema validation: text attribute of training data samples
+  can not be empty
+- made the NLU server's ``/evaluate`` endpoint asynchronous
 
 Fixed
 -----
+- fixed certain command line arguments not getting passed into
+  the ``data_router``
+
+[0.11.4] - 2018-03-19
+^^^^^^^^^^^^^^^^^^^^^
+
+Fixed
+-----
+- google analytics docs survey code
+
+
+[0.11.3] - 2018-02-13
+^^^^^^^^^^^^^^^^^^^^^
+
+Fixed
+-----
+- capitalization issues during spacy named entity recognition
+
+
+[0.11.2] - 2018-02-06
+^^^^^^^^^^^^^^^^^^^^^
+
+Fixed
+-----
+- Formatting of tokens without assigned entities in evaluation
 
 
 [0.11.1] - 2018-02-02
@@ -39,6 +303,7 @@ Fixed
 -----
 - Changelog doc formatting
 - fixed project loading for newly added projects to a running server
+- fixed certain command line arguments not getting passed into the data_router
 
 
 [0.11.0] - 2018-01-30
